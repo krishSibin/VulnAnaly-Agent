@@ -34,6 +34,10 @@ def _detect_llm_mode(gemini_key: Optional[str], tcs_key: Optional[str]) -> str:
     return LLM_MODE_NONE
 
 
+class KeyRejected(Exception):
+    """The LLM provider refused the API key; retrying won't help."""
+
+
 # ─────────────────────────────────────────────────────────
 #  HOME MODE: Google GenAI SDK (google-genai)
 # ─────────────────────────────────────────────────────────
@@ -54,6 +58,8 @@ def _call_gemini_home(prompt: str, api_key: str) -> Optional[Dict]:
         if response.text:
             return json.loads(response.text)
     except Exception as e:
+        if any(k in str(e) for k in ("API_KEY_INVALID", "PERMISSION_DENIED", "UNAUTHENTICATED")):
+            raise KeyRejected(str(e)) from e
         logger.error(f"[HOME MODE] Gemini API error: {e}")
     return None
 
@@ -70,6 +76,7 @@ def _call_tcs_gateway(prompt: str, api_key: str) -> Optional[Dict]:
     Calls the TCS LiteLLM Gateway which exposes an OpenAI-compatible endpoint.
     Uses standard HTTP so no additional SDK is required.
     """
+    import urllib.error
     import urllib.request
 
     payload = json.dumps({
@@ -103,6 +110,10 @@ def _call_tcs_gateway(prompt: str, api_key: str) -> Optional[Dict]:
             result = json.loads(resp.read())
             content = result["choices"][0]["message"]["content"]
             return json.loads(content)
+    except urllib.error.HTTPError as e:
+        if e.code in (401, 403):
+            raise KeyRejected(f"HTTP {e.code}") from e
+        logger.error(f"[LAB MODE] TCS Gateway error: {e}")
     except Exception as e:
         logger.error(f"[LAB MODE] TCS Gateway error: {e}")
     return None
@@ -134,6 +145,7 @@ class VulnerabilityAgent:
         self.gemini_key  = gemini_api_key  or os.getenv("GEMINI_API_KEY", "")
         self.tcs_key     = tcs_gateway_key or os.getenv("TCS_GATEWAY_KEY", "")
         self.llm_mode    = _detect_llm_mode(self.gemini_key, self.tcs_key)
+        self.key_rejected = False
 
         # Backwards-compat: expose .api_key so main.py can check if any key is set
         self.api_key = self.tcs_key or self.gemini_key or None
@@ -152,6 +164,8 @@ class VulnerabilityAgent:
             LLM_MODE_LAB:  "TCS LiteLLM Gateway (Lab)",
             LLM_MODE_NONE: "Heuristic / Rule-based",
         }
+        if self.key_rejected:
+            return "Rules only (AI key rejected, check .env)"
         return labels.get(self.llm_mode, "Unknown")
 
     # ── Prioritization ────────────────────────────────────
@@ -195,10 +209,15 @@ Analyze this Qualys vulnerability finding from ServiceNow:
 Vulnerability Details:
 - Target Host/Server : {vuln.get('configuration_item', 'Unknown')}
 - Summary            : {vuln.get('summary', '')}
-- Software Path      : {vuln.get('description', '')}
+- Scanner Proof      : {vuln.get('description', '')}
 - Risk Rating        : {vuln.get('risk_rating', 'Unknown')}
 - Risk Score         : {vuln.get('risk_score', 0)} / 100
 - Qualys QID         : {vuln.get('qid', '')}
+- CVE                : {vuln.get('cve', '') or 'n/a'}
+- CVSS v3            : {vuln.get('cvss_v3') or 'n/a'} {vuln.get('cvss_severity', '')}
+- Scanner Summary    : {vuln.get('vulnerability_summary', '')}
+- Scanner Threat     : {vuln.get('threat', '')}
+- Vendor Solution    : {vuln.get('vendor_solution', '')}
 - Assigned Team      : {vuln.get('assignment_group', 'S-TCS-DC-WINTEL')}
 - Environment        : {vuln.get('operating_environment', 'Production')}
 - Remediation Task   : {vuln.get('remediation_task', '')}
@@ -229,13 +248,21 @@ Respond ONLY with a valid JSON object containing:
         llm_result = None
 
         # ── Try LLM call based on active mode ───────────
-        if self.llm_mode == LLM_MODE_HOME and self.gemini_key:
-            prompt    = self._build_prompt(vuln, fix)
-            llm_result = _call_gemini_home(prompt, self.gemini_key)
+        # Once the provider has rejected the key, stop calling it for every finding.
+        try:
+            if self.key_rejected:
+                pass
+            elif self.llm_mode == LLM_MODE_HOME and self.gemini_key:
+                prompt    = self._build_prompt(vuln, fix)
+                llm_result = _call_gemini_home(prompt, self.gemini_key)
 
-        elif self.llm_mode == LLM_MODE_LAB and self.tcs_key:
-            prompt    = self._build_prompt(vuln, fix)
-            llm_result = _call_tcs_gateway(prompt, self.tcs_key)
+            elif self.llm_mode == LLM_MODE_LAB and self.tcs_key:
+                prompt    = self._build_prompt(vuln, fix)
+                llm_result = _call_tcs_gateway(prompt, self.tcs_key)
+        except KeyRejected as e:
+            logger.error(f"[AGENT] {self.mode_label} rejected the API key ({str(e)[:120]}). "
+                         f"Using rule-based analysis until the key in .env is fixed and the agent restarted.")
+            self.key_rejected = True
 
         # ── Heuristic fallback if LLM failed / not available ─
         if not llm_result:
@@ -251,8 +278,13 @@ Respond ONLY with a valid JSON object containing:
             task   = vuln.get("remediation_task", "N/A")
             summ   = vuln.get("summary", "")
 
+            cve    = vuln.get("cve")
+            threat = vuln.get("threat")
             llm_result = {
                 "risk_assessment": (
+                    f"{threat} {ci} ({env}) is affected"
+                    f"{f' by {cve}' if cve else ''} with a risk score of {risk_score}."
+                    if threat else
                     f"Vulnerability '{summ}' compromises host {ci} with a risk "
                     f"score of {risk_score}. Unpatched, this allows remote code "
                     f"execution or privilege escalation in the {env} environment."
@@ -264,9 +296,11 @@ Respond ONLY with a valid JSON object containing:
                     f"ServiceNow Task: {task}."
                 ),
                 "remediation_plan": [
-                    f"Obtain verified binary from {fix['dl_source']}",
+                    f"{vuln.get('vendor_solution') or 'Apply the vendor fix'} "
+                    f"(binary from {fix['dl_source']})",
                     f"Deploy patch silently on {ci} with reboot={'required' if fix['requires_reboot'] else 'NOT required'}",
-                    f"Verify signature and close ServiceNow task {task}",
+                    f"Confirm the next Qualys scan no longer detects {vuln.get('qid') or 'the issue'}, "
+                    f"then close ServiceNow task {task}",
                 ],
                 "patch_urgency": urgency,
             }
@@ -279,3 +313,61 @@ Respond ONLY with a valid JSON object containing:
             "approval_status":   "Pending",
             "responsible_team":  vuln.get("assignment_group", "S-TCS-DC-WINTEL"),
         }
+
+    # ── Review a remediation that didn't verify ──────────
+    def review_remediation(self, vuln: Dict[str, Any], result: Dict[str, Any]) -> Dict[str, str]:
+        """
+        Read the node's real output and say what went wrong and what to do next.
+        Returns {"summary": ..., "next_step": ...}. The agent only records this;
+        it never triggers a fix by itself.
+        """
+        status = result.get("status", "failed")
+        logs = "\n".join(result.get("logs", [])[-40:])
+        review = None
+
+        if not self.key_rejected and self.llm_mode in (LLM_MODE_HOME, LLM_MODE_LAB):
+            prompt = f"""
+A remediation agent tried to fix this vulnerability and could not verify the fix.
+
+Finding  : {vuln.get('summary', '')} ({vuln.get('cve', '') or vuln.get('qid', '')})
+Server   : {vuln.get('configuration_item', '')}
+Vendor fix: {vuln.get('vendor_solution', '')}
+Result   : {status}
+Node output (last lines):
+{logs}
+
+Respond ONLY with a JSON object:
+{{
+  "summary": "<one or two sentences: what happened, based only on the output above>",
+  "next_step": "<one short instruction for the server team>"
+}}
+"""
+            try:
+                if self.llm_mode == LLM_MODE_HOME:
+                    review = _call_gemini_home(prompt, self.gemini_key)
+                else:
+                    review = _call_tcs_gateway(prompt, self.tcs_key)
+            except KeyRejected:
+                self.key_rejected = True
+                review = None
+
+        if not (isinstance(review, dict) and review.get("summary") and review.get("next_step")):
+            solution = vuln.get("vendor_solution") or "apply the vendor's fix"
+            review = {
+                "vulnerable":    {"summary": "The installed version is still below the fixed version and this node only checks.",
+                                  "next_step": "Restart the node with --install to let the agent upgrade it, or "
+                                               f"patch manually: {solution}"},
+                "failed":        {"summary": "The update ran but the version check afterwards did not pass.",
+                                  "next_step": "Check the winget output above (a Windows permission prompt or a "
+                                               "running app often blocks it), close the app and try again."},
+                "not_installed": {"summary": "The scanner reported this software, but it is not installed on the node.",
+                                  "next_step": "Confirm with a new Qualys scan; if it is gone, close the item as resolved."},
+                "version_unavailable": {"summary": "The node is set to install an exact approved version, but that "
+                                                  "version is not in winget and no approved installer is configured.",
+                                       "next_step": "Add the approved installer and its SHA256 to approved_versions.json "
+                                                    "on the node, or switch this software to the 'latest' policy."},
+                "manual":        {"summary": "This type of patch is not automated on the nodes.",
+                                  "next_step": f"Patch manually: {solution}"},
+            }.get(status, {"summary": f"The fix did not verify (status: {status}).",
+                           "next_step": f"Investigate on the server, then patch: {solution}"})
+        return {"summary": str(review["summary"]).strip(), "next_step": str(review["next_step"]).strip()}

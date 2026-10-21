@@ -1,0 +1,30 @@
+{
+  "_comment": [
+    "Copy to approved_versions.json (next to node_worker.py) to use. Read when the node starts.",
+    "policy 'latest' (default): install the newest version; it must be at least the version Qualys requires.",
+    "policy 'exact': install the required version from the finding, or 'version' if IT approved a specific one.",
+    "  1st try: winget, pinned to that version.",
+    "  2nd try: 'installer' — an installer IT downloaded and tested, run only if its SHA256 matches 'sha256'.",
+    "  Otherwise nothing is installed and the item stays open as 'approved version not available'.",
+    "Get a file's SHA256 with:  certutil -hashfile <file> SHA256"
+  ],
+
+  "7zip":         { "policy": "exact" },
+  "adobe_reader": { "policy": "exact", "version": "23.006.20320" },
+  "edge":         { "policy": "latest" },
+
+  "chrome": {
+    "policy": "exact",
+    "version": "125.0.6422.60",
+    "installer": "\\\\fileserver\\approved\\googlechromestandaloneenterprise64-125.0.6422.60.msi",
+    "sha256": "paste-the-sha256-of-that-msi-here"
+  },
+
+  "notepadpp": {
+    "policy": "exact",
+    "version": "8.5.7",
+    "installer": "C:\\ApprovedInstallers\\npp.8.5.7.Installer.x64.exe",
+    "sha256": "paste-the-sha256-of-that-exe-here",
+    "args": ["/S"]
+  }
+}

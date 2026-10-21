@@ -3,332 +3,190 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Vulnerability Analysis & Automated Remediation Agent</title>
-  <link rel="stylesheet" href="/static/css/style.css">
+  <title>Remediation Desk</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-  <script src="https://cdn.jsdelivr.net/npm/lucide@0.344.0/dist/umd/lucide.min.js"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,500..800&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/css/style.css">
 </head>
 <body>
 
-  <!-- ─── Sidebar ─────────────────────────────────────── -->
-  <aside class="sidebar">
+  <!-- ─── Top bar ─────────────────────────────────────── -->
+  <header class="topbar">
     <div class="brand">
-      <div class="brand-icon">
-        <i data-lucide="shield-alert"></i>
-      </div>
+      <svg class="brand-mark" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2 4 5v6c0 5 3.4 9.4 8 11 4.6-1.6 8-6 8-11V5l-8-3Z"/><path d="m8.5 12 2.5 2.5 4.5-5"/></svg>
       <div>
-        <div class="brand-title">Vuln Remediation</div>
-        <div class="brand-subtitle">Autonomous Agent POC</div>
+        <div class="brand-name">Remediation Desk</div>
+        <div class="brand-sub">Qualys findings · S-TCS-DC-WINTEL</div>
       </div>
     </div>
 
-    <nav class="nav-links">
-      <a class="nav-item active" id="nav-dashboard" onclick="switchTab('dashboard')">
-        <i data-lucide="layout-dashboard"></i><span>Pipeline Dashboard</span>
-      </a>
-      <a class="nav-item" id="nav-nodes" onclick="switchTab('nodes')">
-        <i data-lucide="server"></i><span>Server Nodes</span>
-        <span class="node-badge" id="online-badge" style="margin-left:auto;"></span>
-      </a>
-      <a class="nav-item" id="nav-history" onclick="switchTab('history')">
-        <i data-lucide="history"></i><span>Remediation History</span>
-      </a>
-      <a class="nav-item" id="nav-settings" onclick="switchTab('settings')">
-        <i data-lucide="settings"></i><span>Configuration</span>
-      </a>
+    <nav class="tabs" role="tablist">
+      <button class="tab active" id="nav-activity" onclick="switchTab('activity')">Activity</button>
+      <button class="tab"        id="nav-queue"    onclick="switchTab('queue')">Queue</button>
+      <button class="tab"        id="nav-servers"  onclick="switchTab('servers')">Servers <span class="tab-count" id="nav-servers-count"></span></button>
+      <button class="tab"        id="nav-history"  onclick="switchTab('history')">History</button>
+      <button class="tab"        id="nav-settings" onclick="switchTab('settings')">Settings</button>
     </nav>
 
-    <!-- System Status -->
-    <div class="system-status">
-      <div class="status-row">
-        <span>ServiceNow:</span>
-        <span id="snow-status"><span class="status-indicator warn"></span>Snapshot</span>
-      </div>
-      <div class="status-row">
-        <span>LLM Mode:</span>
-        <span id="llm-mode-label" style="font-size:0.72rem; color:#93c5fd;">Heuristic</span>
-      </div>
-      <div class="status-row">
-        <span>Nodes Online:</span>
-        <span id="sidebar-nodes">0 / 3</span>
-      </div>
+    <div class="sys">
+      <span class="sys-item" id="sys-auto" title="Autopilot"><i class="dot"></i><span id="sys-auto-label">Autopilot</span></span>
+      <span class="sys-item" id="sys-snow" title="ServiceNow connection"><i class="dot"></i>ServiceNow</span>
+      <span class="sys-item" id="sys-llm"  title="Analysis engine"><i class="dot"></i><span id="sys-llm-label">AI</span></span>
+      <span class="sys-item" id="sys-nodes" title="Server nodes online"><i class="dot"></i><span id="sys-nodes-label">0/3 servers</span></span>
     </div>
+  </header>
+
+  <main class="page">
+
+    <!-- ══ ACTIVITY ════════════════════════════════════════ -->
+    <section id="tab-activity">
+      <div class="page-head">
+        <div>
+          <h1>Agent activity</h1>
+          <p class="lede">Everything the agent does, as it happens. Your part is approving on the server pages.</p>
+        </div>
+        <div class="head-actions">
+          <button class="btn" id="btn-autopilot" onclick="toggleAutopilot()">Pause autopilot</button>
+        </div>
+      </div>
+      <div class="autopilot" id="autopilot-bar"></div>
+      <div class="toolbar">
+        <div class="filters" role="group" aria-label="Filter activity">
+          <button class="chip active" data-feed="all">Everything</button>
+          <button class="chip" data-feed="steps">Agent steps</button>
+          <button class="chip" data-feed="node">Node output</button>
+          <button class="chip" data-feed="problems">Problems</button>
+        </div>
+        <label class="follow"><input type="checkbox" id="feed-follow" checked> Follow new lines</label>
+      </div>
+      <ol class="feed" id="feed"><li class="empty">Waiting for the agent's first sync with ServiceNow…</li></ol>
+    </section>
+
+    <!-- ══ QUEUE ═══════════════════════════════════════════ -->
+    <section id="tab-queue" hidden>
+      <div class="page-head">
+        <div>
+          <h1>Remediation queue</h1>
+          <p class="lede" id="queue-lede">Fetch open findings from ServiceNow to start.</p>
+        </div>
+        <div class="head-actions">
+          <button class="btn" id="btn-fetch" onclick="fetchVulnerabilities()">
+            <svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-2.6-6.4M21 4v5h-5"/></svg>
+            Sync now
+          </button>
+          <button class="btn btn-primary" onclick="requestTopPriority()">Request approval for highest risk</button>
+        </div>
+      </div>
+
+      <div class="tally" id="tally">
+        <div class="tally-item"><span class="tally-n" id="t-open">–</span><span class="tally-l">open findings</span></div>
+        <div class="tally-item crit"><span class="tally-n" id="t-critical">–</span><span class="tally-l">critical</span></div>
+        <div class="tally-item wait"><span class="tally-n" id="t-waiting">–</span><span class="tally-l">waiting on servers</span></div>
+        <div class="tally-item ok"><span class="tally-n" id="t-ready">–</span><span class="tally-l">approved, ready to patch</span></div>
+        <div class="tally-item done"><span class="tally-n" id="t-patched">–</span><span class="tally-l">patched</span></div>
+      </div>
+
+      <div class="toolbar">
+        <div class="filters" role="group" aria-label="Filter findings">
+          <button class="chip active" data-filter="all">All</button>
+          <button class="chip" data-filter="needs">Needs approval</button>
+          <button class="chip" data-filter="waiting">Waiting on server</button>
+          <button class="chip" data-filter="ready">Ready to patch</button>
+          <button class="chip" data-filter="patched">Patched</button>
+        </div>
+        <input id="search" class="search" type="search" placeholder="Search server, software, VIT…" oninput="renderQueue()">
+      </div>
+
+      <div class="queue-head" aria-hidden="true">
+        <span>Risk</span><span>Finding</span><span>Progress</span><span></span>
+      </div>
+      <ol class="queue" id="queue">
+        <li class="empty">No findings loaded. <button class="link" onclick="fetchVulnerabilities()">Fetch from ServiceNow</button></li>
+      </ol>
+    </section>
+
+    <!-- ══ SERVERS ═════════════════════════════════════════ -->
+    <section id="tab-servers" hidden>
+      <div class="page-head">
+        <div>
+          <h1>Servers</h1>
+          <p class="lede">Each node patches the servers listed on it, and its team approves requests on the node's own page.</p>
+        </div>
+        <div class="head-actions">
+          <button class="btn" onclick="refreshNodes()">Check status</button>
+        </div>
+      </div>
+      <div class="servers" id="servers"></div>
+
+      <div class="panel howto">
+        <h2>Running the servers</h2>
+        <div class="howto-grid">
+          <div>
+            <h3>On this laptop</h3>
+            <p>Starts all three servers, each on its own port (9001–9003).</p>
+            <pre class="cmd">python node_worker.py --all</pre>
+          </div>
+          <div>
+            <h3>On separate laptops</h3>
+            <p>Run one per laptop, then set its IP above.</p>
+            <pre class="cmd">python node_worker.py --node-id node_1 --master-ip &lt;this laptop's IP&gt;</pre>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ══ HISTORY ═════════════════════════════════════════ -->
+    <section id="tab-history" hidden>
+      <div class="page-head">
+        <div>
+          <h1>History</h1>
+          <p class="lede">Every patch run since the agent started, newest first.</p>
+        </div>
+      </div>
+      <div class="panel flush">
+        <table class="grid">
+          <thead><tr><th>When</th><th>Server</th><th>Finding</th><th>Patch</th><th>Ran on</th><th>Approved by</th><th>ServiceNow</th></tr></thead>
+          <tbody id="history"><tr><td colspan="7" class="empty">No patches run yet.</td></tr></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- ══ SETTINGS ════════════════════════════════════════ -->
+    <section id="tab-settings" hidden>
+      <div class="page-head">
+        <div>
+          <h1>Settings</h1>
+          <p class="lede">Values saved here last until the agent restarts. For permanent settings, edit <code>.env</code>.</p>
+        </div>
+      </div>
+      <form class="panel settings" onsubmit="saveConfig(event)">
+        <fieldset>
+          <legend>ServiceNow</legend>
+          <label>Instance URL<input id="cfg-url" placeholder="https://yourinstance.service-now.com" autocomplete="off"></label>
+          <div class="row2">
+            <label>Username<input id="cfg-user" autocomplete="off"></label>
+            <label>Password<input id="cfg-pass" type="password" autocomplete="new-password"></label>
+          </div>
+        </fieldset>
+        <fieldset>
+          <legend>Analysis engine</legend>
+          <p class="hint">Set one key. With neither, findings are analysed with built-in rules and no AI.</p>
+          <label>Gemini API key<input id="cfg-gemini" type="password" placeholder="AIza…" autocomplete="off"></label>
+          <label>TCS gateway key<input id="cfg-tcs" type="password" placeholder="Issued at the AI Lab" autocomplete="off"></label>
+        </fieldset>
+        <div><button class="btn btn-primary" type="submit">Save settings</button></div>
+      </form>
+    </section>
+  </main>
+
+  <!-- ─── Finding details ──────────────────────────────── -->
+  <div class="scrim" id="scrim" onclick="closeDetail()"></div>
+  <aside class="detail" id="detail" aria-hidden="true" aria-labelledby="d-title" role="dialog">
+    <div class="detail-inner" id="detail-body"></div>
   </aside>
 
-  <!-- ─── Main ─────────────────────────────────────────── -->
-  <div class="main-wrapper">
-
-    <!-- Header -->
-    <header class="header">
-      <div class="page-title">
-        <h1>Qualys Vulnerability Remediation Agent</h1>
-        <p>Prioritizes high-risk vulnerabilities · Simulates team approvals · Dispatches patches to target servers</p>
-      </div>
-      <div class="header-actions">
-        <button class="btn btn-secondary" onclick="fetchVulnerabilities()">
-          <i data-lucide="refresh-cw"></i>Fetch from ServiceNow
-        </button>
-        <button class="btn btn-primary" onclick="autoProcessTopPriority()">
-          <i data-lucide="zap"></i>Remediate Highest Risk
-        </button>
-      </div>
-    </header>
-
-    <!-- Content -->
-    <main class="content">
-
-      <!-- ── Metrics ── -->
-      <section class="metrics-grid">
-        <div class="metric-card" style="--card-accent:#ef4444;">
-          <div class="metric-header"><span>Critical & High Risk</span><i data-lucide="flame" style="color:#ef4444;"></i></div>
-          <div class="metric-value" id="count-critical">0</div>
-          <div class="metric-sub">Ranked — highest processed first</div>
-        </div>
-        <div class="metric-card" style="--card-accent:#f59e0b;">
-          <div class="metric-header"><span>Pending Approvals</span><i data-lucide="clock" style="color:#f59e0b;"></i></div>
-          <div class="metric-value" id="count-pending">0</div>
-          <div class="metric-sub">Team change request required</div>
-        </div>
-        <div class="metric-card" style="--card-accent:#10b981;">
-          <div class="metric-header"><span>Remediated</span><i data-lucide="check-circle" style="color:#10b981;"></i></div>
-          <div class="metric-value" id="count-remediated">0</div>
-          <div class="metric-sub">Patches applied & closed</div>
-        </div>
-        <div class="metric-card" style="--card-accent:#06b6d4;">
-          <div class="metric-header"><span>Nodes Online</span><i data-lucide="server" style="color:#06b6d4;"></i></div>
-          <div class="metric-value" id="count-nodes">0 / 3</div>
-          <div class="metric-sub">Target server laptops</div>
-        </div>
-      </section>
-
-      <!-- ── Agent Pipeline Banner ── -->
-      <div class="agent-banner">
-        <div class="agent-banner-info">
-          <h3><i data-lucide="bot" style="color:#818cf8;"></i> Autonomous Remediation Pipeline</h3>
-          <p style="color:var(--text-muted);font-size:0.85rem;">
-            Qualys findings ingested from ServiceNow are evaluated by Gemini LLM, sorted by risk, and dispatched
-            to the correct server node (laptop) once team approval is granted.
-          </p>
-          <div class="agent-steps">
-            <span class="step-chip active"><i data-lucide="check"></i> 1. ServiceNow Ingest</span>
-            <span class="step-chip active"><i data-lucide="check"></i> 2. AI Risk Prioritization</span>
-            <span class="step-chip"><i data-lucide="mail"></i> 3. Team Approval</span>
-            <span class="step-chip"><i data-lucide="send"></i> 4. Dispatch to Server Node</span>
-          </div>
-        </div>
-        <div style="text-align:right; flex-shrink:0; padding-left:20px;">
-          <div style="font-size:0.72rem; color:var(--text-dim); text-transform:uppercase; letter-spacing:.05em;">LLM Engine</div>
-          <div id="banner-llm-mode" style="color:#a5f3fc; font-weight:600; margin-top:4px; font-size:0.9rem;">Heuristic</div>
-        </div>
-      </div>
-
-      <!-- ══ DASHBOARD TAB ══════════════════════════════════ -->
-      <section id="tab-dashboard">
-        <div class="card-section">
-          <div class="card-header">
-            <div class="card-title">Vulnerability Remediation Queue  <span style="font-size:0.8rem;color:var(--text-dim);">(sn_vul_m2m_vul_group_item)</span></div>
-            <div style="font-size:0.8rem;color:var(--text-dim);">Sorted by Highest Priority</div>
-          </div>
-          <div class="table-responsive">
-            <table>
-              <thead>
-                <tr>
-                  <th>Priority</th>
-                  <th>Target Server (CI)</th>
-                  <th>Vulnerability / Software</th>
-                  <th>Team</th>
-                  <th>Patch Action</th>
-                  <th>Assigned Node</th>
-                  <th>Approval</th>
-                  <th>Actions</th>
-                </tr>
-              </thead>
-              <tbody id="vuln-tbody">
-                <tr><td colspan="8" style="text-align:center;padding:40px;color:var(--text-dim);">
-                  Click "Fetch from ServiceNow" to load vulnerabilities.
-                </td></tr>
-              </tbody>
-            </table>
-          </div>
-        </div>
-      </section>
-
-      <!-- ══ NODES TAB ══════════════════════════════════════ -->
-      <section id="tab-nodes" style="display:none;">
-        <div class="card-header" style="padding:0 0 16px 0; border:none;">
-          <div class="card-title">Target Server Nodes</div>
-          <button class="btn btn-secondary btn-sm" onclick="refreshNodes()">
-            <i data-lucide="refresh-cw"></i>Refresh Status
-          </button>
-        </div>
-        <div id="nodes-grid" class="nodes-grid">
-          <!-- populated by JS -->
-        </div>
-
-        <!-- IP Edit form (hidden until needed) -->
-        <div id="ip-edit-panel" style="display:none; margin-top:24px;">
-          <div class="card-section" style="max-width:500px;">
-            <div class="card-header"><div class="card-title">Update Node IP Address</div></div>
-            <div style="padding:20px; display:flex; flex-direction:column; gap:12px;">
-              <div style="font-size:0.82rem;color:var(--text-muted);">Node: <strong id="edit-node-label"></strong></div>
-              <input type="hidden" id="edit-node-id">
-              <div class="form-group">
-                <label>IP Address</label>
-                <input type="text" id="edit-node-ip" class="form-input" placeholder="192.168.1.101">
-              </div>
-              <div class="form-group">
-                <label>Port</label>
-                <input type="number" id="edit-node-port" class="form-input" value="9001">
-              </div>
-              <div style="display:flex; gap:10px;">
-                <button class="btn btn-primary btn-sm" onclick="saveNodeIP()">Save</button>
-                <button class="btn btn-secondary btn-sm" onclick="document.getElementById('ip-edit-panel').style.display='none'">Cancel</button>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <!-- Quick-start instructions for demo -->
-        <div class="card-section" style="margin-top:24px;">
-          <div class="card-header"><div class="card-title">Demo Setup — How to Connect Laptops</div></div>
-          <div style="padding:20px; display:flex; flex-direction:column; gap:10px; font-size:0.85rem; color:var(--text-muted);">
-            <p><strong style="color:#fff;">Step 1:</strong> Copy <code class="inline-code">node_worker.py</code> to each of the 3 target laptops.</p>
-            <p><strong style="color:#fff;">Step 2:</strong> Find this master laptop's IP (run <code class="inline-code">ipconfig</code>) — e.g., <code class="inline-code">192.168.1.100</code></p>
-            <p><strong style="color:#fff;">Step 3:</strong> On each target laptop, open a terminal and run:</p>
-            <div class="code-box">
-              python node_worker.py --node-id node_1 --master-ip 192.168.1.100<br>
-              python node_worker.py --node-id node_2 --master-ip 192.168.1.100<br>
-              python node_worker.py --node-id node_3 --master-ip 192.168.1.100
-            </div>
-            <p><strong style="color:#fff;">Step 4:</strong> Update each node's IP above so the master can dispatch patches to it.</p>
-            <p><strong style="color:#fff;">Step 5:</strong> When you click "Apply Fix" on the Dashboard, the patch executes live on the target laptop's terminal!</p>
-            <p style="color:#fbbf24;"><strong>⚠ No network?</strong> The master automatically falls back to local simulation — the demo will never break.</p>
-          </div>
-        </div>
-      </section>
-
-      <!-- ══ HISTORY TAB ═════════════════════════════════════ -->
-      <section id="tab-history" style="display:none;">
-        <div class="card-section">
-          <div class="card-header">
-            <div class="card-title">Patch Execution History</div>
-          </div>
-          <div class="table-responsive">
-            <table>
-              <thead>
-                <tr>
-                  <th>Target Host</th>
-                  <th>Patch Applied</th>
-                  <th>Software</th>
-                  <th>Executed On</th>
-                  <th>Mode</th>
-                  <th>ServiceNow</th>
-                </tr>
-              </thead>
-              <tbody id="history-tbody">
-                <tr><td colspan="6" style="text-align:center;padding:30px;color:var(--text-dim);">No patches executed yet.</td></tr>
-              </tbody>
-            </table>
-          </div>
-        </div>
-      </section>
-
-      <!-- ══ SETTINGS TAB ════════════════════════════════════ -->
-      <section id="tab-settings" style="display:none;">
-        <div class="card-section" style="max-width:680px;">
-          <div class="card-header"><div class="card-title">ServiceNow & LLM Configuration</div></div>
-          <div style="padding:24px; display:flex; flex-direction:column; gap:16px;">
-
-            <div style="background:rgba(99,102,241,.08);border:1px solid rgba(99,102,241,.3);border-radius:8px;padding:14px;font-size:0.82rem;">
-              <strong style="color:#a5b4fc;">LLM Mode auto-detection:</strong><br>
-              • Set <code class="inline-code">GEMINI_API_KEY</code> → Home Mode (Google Gemini API directly)<br>
-              • Set <code class="inline-code">TCS_GATEWAY_KEY</code> → Lab Mode (TCS LiteLLM Gateway at genailab.tcs.in)<br>
-              • Set neither → Heuristic fallback (works fully offline)
-            </div>
-
-            <div class="form-group">
-              <label>ServiceNow Instance URL</label>
-              <input type="text" id="cfg-url" class="form-input" placeholder="https://yourinstance.service-now.com">
-            </div>
-            <div class="form-group">
-              <label>ServiceNow Username</label>
-              <input type="text" id="cfg-user" class="form-input" placeholder="admin">
-            </div>
-            <div class="form-group">
-              <label>ServiceNow Password</label>
-              <input type="password" id="cfg-pass" class="form-input" placeholder="••••••••">
-            </div>
-            <hr style="border-color:var(--border-glass);">
-            <div class="form-group">
-              <label>Gemini API Key <span style="color:var(--text-dim)">(Home Mode)</span></label>
-              <input type="password" id="cfg-gemini" class="form-input" placeholder="AIzaSy...">
-            </div>
-            <div class="form-group">
-              <label>TCS Gateway Key <span style="color:var(--text-dim)">(Lab / Hackathon Mode)</span></label>
-              <input type="password" id="cfg-tcs" class="form-input" placeholder="Provided at AI Lab">
-            </div>
-            <button class="btn btn-primary" style="width:fit-content;" onclick="saveConfig()">
-              <i data-lucide="save"></i>Save Configuration
-            </button>
-          </div>
-        </div>
-      </section>
-
-    </main>
-  </div>
-
-  <!-- ─── Approval Modal ─────────────────────────────── -->
-  <div class="modal-overlay" id="approval-modal">
-    <div class="modal-card">
-      <div class="modal-header">
-        <h3>Server Team Approval — Change Request</h3>
-        <button class="btn btn-secondary btn-sm" onclick="closeModal()">✕</button>
-      </div>
-      <div class="modal-body">
-        <div class="info-box">
-          <div style="font-weight:600;margin-bottom:4px;" id="modal-server"></div>
-          <div style="color:var(--text-muted);" id="modal-summary"></div>
-          <div style="color:var(--text-dim);margin-top:6px;" id="modal-assigned"></div>
-          <div style="margin-top:6px;" id="modal-node-target"></div>
-        </div>
-        <div>
-          <label style="font-size:0.82rem;color:var(--text-muted);font-weight:600;">Agent AI Risk Analysis & Approval Message:</label>
-          <div class="info-box" style="margin-top:6px;border-left:3px solid var(--accent-indigo);" id="modal-ai-msg"></div>
-        </div>
-        <div>
-          <label style="font-size:0.82rem;color:var(--text-muted);font-weight:600;">Patch Command to Execute on Target Server:</label>
-          <div class="code-box" style="margin-top:6px;" id="modal-command"></div>
-        </div>
-        <div class="form-group">
-          <label>Team Decision Comments</label>
-          <input type="text" id="modal-comments" class="form-input" value="Approved by WINTEL Server Owner for automated patch execution">
-        </div>
-      </div>
-      <div class="modal-footer">
-        <button class="btn btn-danger" onclick="submitDecision(false)">Reject</button>
-        <button class="btn btn-success" onclick="submitDecision(true)">✓ Approve Fix</button>
-      </div>
-    </div>
-  </div>
-
-  <!-- ─── Execution Logs Modal ──────────────────────── -->
-  <div class="modal-overlay" id="execution-modal">
-    <div class="modal-card">
-      <div class="modal-header">
-        <h3>Patch Execution Output</h3>
-        <span id="exec-node-badge" class="badge badge-server" style="font-size:0.8rem;"></span>
-        <button class="btn btn-secondary btn-sm" onclick="closeExecutionModal()" style="margin-left:auto;">✕</button>
-      </div>
-      <div class="modal-body">
-        <div class="code-box" id="exec-logs" style="max-height:280px;overflow-y:auto;line-height:1.8;"></div>
-      </div>
-      <div class="modal-footer">
-        <button class="btn btn-primary" onclick="closeExecutionModal()">Done</button>
-      </div>
-    </div>
-  </div>
+  <div class="toasts" id="toasts" aria-live="polite"></div>
 
   <script src="/static/js/app.js"></script>
 </body>

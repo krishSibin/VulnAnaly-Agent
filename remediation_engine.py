@@ -12,8 +12,56 @@ class RemediationFixEngine:
     Covers Microsoft Windows DLLs/KBs, Edge updates, MS Office updates, 7-Zip, Adobe Reader, Google Chrome, etc.
     """
 
+    # fix_id -> winget package the node is allowed to upgrade (see node_worker.FIX_ACTIONS)
+    WINGET_IDS = {
+        "chrome":       "Google.Chrome",
+        "edge":         "Microsoft.Edge",
+        "7zip":         "7zip.7zip",
+        "adobe_reader": "Adobe.Acrobat.Reader.64-bit",
+        "notepadpp":    "Notepad++.Notepad++",
+    }
+
     @staticmethod
     def identify_remediation_strategy(vuln: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Pick the fix for a finding. Adds:
+          fix_id        — which allow-listed action the node should run
+          fixed_version — minimum safe version, read from the scanner's solution text
+        """
+        fix = RemediationFixEngine._base_strategy(vuln)
+        summary = (vuln.get("summary") or "").lower()
+        solution = vuln.get("vendor_solution") or ""
+
+        fix_id = {
+            "Browser Update": "edge",
+            "MS Office C2R Update / Security Patch": "office",
+            "Microsoft Windows Cumulative Update / DLL Patch": "windows_update",
+            "Application Silent Upgrade": "7zip",
+            "Application MSP Patch": "adobe_reader",
+            "Browser MSI Silent Upgrade": "chrome",
+        }.get(fix["patch_type"], "notepadpp" if "notepad++" in summary else "manual")
+        fix["fix_id"] = fix_id
+
+        # "Update Google Chrome to version 125.0.6422.60 or later." -> 125.0.6422.60
+        m = re.search(r"\bto (?:version )?(\d+(?:\.\d+)+)", solution)
+        fix["fixed_version"] = m.group(1) if m else ""
+
+        # Show the command that will really run
+        winget_id = RemediationFixEngine.WINGET_IDS.get(fix_id)
+        if winget_id:
+            fix["fix_command"] = (f"winget upgrade --id {winget_id} --exact --silent "
+                                  f"--accept-package-agreements --accept-source-agreements")
+            fix["dl_source"] = f"winget ({winget_id})"
+        elif fix_id == "windows_update":
+            kb = re.search(r"\bKB\d{6,8}\b", solution)
+            if kb:
+                fix["fix_command"] = f"Install {kb.group(0)} (Microsoft Update Catalog) and reboot"
+        if fix_id in ("windows_update", "office", "manual"):
+            fix["recommended_action"] = solution or fix["recommended_action"]
+        return fix
+
+    @staticmethod
+    def _base_strategy(vuln: Dict[str, Any]) -> Dict[str, Any]:
         summary = (vuln.get("summary") or "").lower()
         desc = (vuln.get("description") or "").lower()
         qid = vuln.get("qid", "")

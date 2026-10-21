@@ -1,6 +1,8 @@
+import html
 import os
 import json
 import logging
+import re
 from typing import List, Dict, Any, Optional
 import requests
 from dotenv import load_dotenv
@@ -8,6 +10,21 @@ from dotenv import load_dotenv
 load_dotenv()
 
 logger = logging.getLogger(__name__)
+
+# Vulnerable item fields, plus the linked vulnerability (Qualys QID) dot-walked in
+VIT_FIELDS = ",".join([
+    "sys_id", "number", "short_description", "description", "state", "source",
+    "cmdb_ci", "assignment_group", "business_criticality", "risk_score", "risk_rating",
+    "first_found_dt_tm", "last_found_dt_tm",
+    "vulnerability.id", "vulnerability.name", "vulnerability.summary", "vulnerability.threat",
+    "vulnerability.solution", "vulnerability.v3_base_score", "vulnerability.v3_base_severity",
+    "vulnerability.ref_sn_vul_third_party_entry.cve_id",
+])
+
+
+def _text(value: str) -> str:
+    """HTML field (threat, solution, proof) to plain text."""
+    return html.unescape(re.sub(r"<[^>]+>", " ", value or "")).strip()
 
 class ServiceNowClient:
     """
@@ -62,6 +79,9 @@ class ServiceNowClient:
             "sysparm_limit": 50,
             "sysparm_display_value": "true"
         }
+        if target_table != "incident":
+            params["sysparm_fields"] = VIT_FIELDS
+            params["sysparm_exclude_reference_link"] = "true"
 
         logger.info(f"Connecting directly to live ServiceNow API: {api_url}")
         try:
@@ -79,13 +99,45 @@ class ServiceNowClient:
         if response.status_code == 200:
             raw_results = response.json().get("result", [])
             logger.info(f"Successfully retrieved {len(raw_results)} records from ServiceNow {target_table}.")
-            return self._normalize_snow_records(raw_results, is_incident=(target_table == "incident"))
+            if target_table == "incident":
+                return self._normalize_snow_records(raw_results, is_incident=True)
+            proofs = self._fetch_detections([r.get("sys_id") for r in raw_results if r.get("sys_id")])
+            return self._normalize_snow_records(raw_results, proofs=proofs)
         else:
             err_msg = f"ServiceNow API error ({response.status_code}): {response.text}"
             logger.error(err_msg)
             raise RuntimeError(err_msg)
 
-    def _normalize_snow_records(self, records: List[Dict[str, Any]], is_incident: bool = False) -> List[Dict[str, Any]]:
+    def _fetch_detections(self, vit_sys_ids: List[str]) -> Dict[str, Dict[str, str]]:
+        """Scanner evidence per vulnerable item: proof (path + version) and solution summary."""
+        if not vit_sys_ids:
+            return {}
+        try:
+            resp = requests.get(
+                f"{self.instance_url}/api/now/table/sn_vul_detection",
+                auth=(self.username, self.password),
+                headers={"Accept": "application/json"},
+                params={
+                    "sysparm_query": "vulnerable_itemIN" + ",".join(vit_sys_ids),
+                    "sysparm_fields": "vulnerable_item,proof,solution_summary",
+                    "sysparm_limit": 500,
+                },
+                timeout=15,
+            )
+            resp.raise_for_status()
+        except requests.exceptions.RequestException as e:
+            logger.warning(f"Could not read detections, continuing without proof: {e}")
+            return {}
+        out = {}
+        for d in resp.json().get("result", []):
+            vi = d.get("vulnerable_item")
+            vi = vi.get("value") if isinstance(vi, dict) else vi
+            out.setdefault(vi, {"proof": _text(d.get("proof")), "solution_summary": d.get("solution_summary") or ""})
+        return out
+
+    def _normalize_snow_records(self, records: List[Dict[str, Any]], is_incident: bool = False,
+                                proofs: Optional[Dict[str, Dict[str, str]]] = None) -> List[Dict[str, Any]]:
+        proofs = proofs or {}
         normalized = []
         for r in records:
             if is_incident:
@@ -159,77 +211,66 @@ class ServiceNowClient:
                     "operational_status": "Operational"
                 })
             else:
-                # sn_vul_vulnerable_item field mapping
-                desc = r.get("description", "") or ""
-                
-                # Parse QID from description field
-                qid = "QID-GENERIC"
-                if "QID: " in desc:
-                    try:
-                        qid = desc.split("QID: ")[1].split("\n")[0].strip()
-                    except Exception:
-                        pass
-
-                # cmdb_ci can be a display_value dict or a plain string
-                ci_val = r.get("cmdb_ci", {})
-                ci_name = ci_val.get("display_value", "") if isinstance(ci_val, dict) else str(ci_val or "Unknown-Host")
-                if not ci_name:
-                    ci_name = str(ci_val) if ci_val else "Unknown-Host"
-
-                # assignment_group
-                ag_val = r.get("assignment_group", {})
-                ag_name = ag_val.get("display_value", "") if isinstance(ag_val, dict) else str(ag_val or "S-TCS-DC-WINTEL")
-                if not ag_name:
-                    ag_name = "S-TCS-DC-WINTEL"
-
-                # risk_rating: 1=Critical,2=High,3=Moderate,4=Low (stored as int choice)
-                rr_raw = r.get("risk_rating", "2")
-                rr_val = rr_raw.get("value", rr_raw) if isinstance(rr_raw, dict) else str(rr_raw)
-                rr_map = {"1": "1 - Critical", "2": "2 - High", "3": "3 - Moderate", "4": "4 - Low"}
-                risk_rating_label = rr_map.get(str(rr_val), f"{rr_val} - High")
-
-                # state: 1=Open,3=In Progress,6=Resolved,7=Closed
-                st_raw = r.get("state", "1")
-                st_val = st_raw.get("value", st_raw) if isinstance(st_raw, dict) else str(st_raw)
-                st_map = {"1": "Open", "2": "In Progress", "3": "In Progress", "6": "Resolved", "7": "Closed"}
-                state_label = st_map.get(str(st_val), "Open")
-
-                # risk_score
-                rs_raw = r.get("risk_score", r.get("source_risk_score", "70"))
+                # sn_vul_vulnerable_item, as the Qualys integration fills it
+                vul = lambda f: (r.get(f"vulnerability.{f}") or "").strip()
                 try:
-                    rs_val = int(float(str(rs_raw)))
-                except Exception:
-                    rs_val = 70
-
-                # business_criticality: 1=Critical,2=High,3=Non-critical,4=Low
-                bc_raw = r.get("business_criticality", "3")
-                bc_val = bc_raw.get("value", bc_raw) if isinstance(bc_raw, dict) else str(bc_raw)
-                bc_map = {"1": "1 - Critical", "2": "2 - High", "3": "3 - Non-critical", "4": "4 - Low"}
-                biz_impact = bc_map.get(str(bc_val), "3 - Non-critical")
-
-                # VIT number (VIT0010001 etc.)
-                vit_number = r.get("number", "")
+                    risk_score = int(float(r.get("risk_score") or 0))
+                except ValueError:
+                    risk_score = 0
+                try:
+                    cvss = float(vul("v3_base_score"))
+                except ValueError:
+                    cvss = None
+                evidence = proofs.get(r.get("sys_id"), {})
+                number = r.get("number", "")
 
                 normalized.append({
                     "sys_id": r.get("sys_id", ""),
-                    "short_description": r.get("short_description", "Vulnerability Finding"),
-                    "configuration_item": ci_name,
-                    "remediation_task": vit_number,
-                    "vulnerable_item": vit_number,
-                    "description": desc,
-                    "summary": r.get("short_description", ""),
-                    "assignment_group": ag_name,
-                    "business_impact": biz_impact,
-                    "risk_rating": risk_rating_label,
-                    "risk_score": rs_val,
-                    "qid": qid,
-                    "state": state_label,
+                    "short_description": r.get("short_description") or "",
+                    "configuration_item": r.get("cmdb_ci") or "Unknown-Host",
+                    "remediation_task": number,
+                    "vulnerable_item": number,
+                    # The scanner's proof (program path + version) is what the fix engine matches on
+                    "description": evidence.get("proof") or r.get("description") or "",
+                    "summary": vul("name") or r.get("short_description") or "",
+                    "assignment_group": r.get("assignment_group") or "S-TCS-DC-WINTEL",
+                    "business_impact": r.get("business_criticality") or "3 - Non-critical",
+                    "risk_rating": r.get("risk_rating") or "",
+                    "risk_score": risk_score,
+                    "qid": vul("id"),
+                    "cve": r.get("vulnerability.ref_sn_vul_third_party_entry.cve_id") or "",
+                    "cvss_v3": cvss,
+                    "cvss_severity": vul("v3_base_severity"),
+                    "vulnerability_summary": vul("summary"),
+                    "threat": _text(vul("threat")),
+                    "vendor_solution": evidence.get("solution_summary") or _text(vul("solution")),
+                    "scanner": r.get("source") or "",
+                    "first_found": r.get("first_found_dt_tm") or "",
+                    "last_found": r.get("last_found_dt_tm") or "",
+                    "state": r.get("state") or "Open",
                     "percent_remediated": "0.00",
-                    "source_severity": 4 if rs_val >= 90 else (3 if rs_val >= 70 else 2),
+                    "source_severity": 4 if risk_score >= 90 else (3 if risk_score >= 70 else 2),
                     "operating_environment": "Production",
-                    "operational_status": "Operational"
+                    "operational_status": "Operational",
                 })
         return normalized
+
+    def add_work_note(self, sys_id: str, work_notes: str) -> bool:
+        """Add a work note to the item without changing its state."""
+        if not self.is_configured():
+            return False
+        try:
+            resp = requests.patch(
+                f"{self.instance_url}/api/now/table/{self.table_name}/{sys_id}",
+                auth=(self.username, self.password),
+                headers={"Accept": "application/json", "Content-Type": "application/json"},
+                json={"work_notes": work_notes},
+                timeout=10,
+            )
+            return resp.status_code in (200, 204)
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Error adding work note to ServiceNow record {sys_id}: {e}")
+            return False
 
     def update_remediation_status(self, sys_id: str, new_state: str = "Closed", work_notes: str = "") -> bool:
         """

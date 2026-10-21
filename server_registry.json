@@ -3,8 +3,14 @@
     {
       "node_id": "node_1",
       "label": "WINTEL-SERVER-01",
-      "ci_names": ["pvwiihamwaapg110", "ppwischwaapg003", "ppwischwaapg004"],
-      "ip": "192.168.1.101",
+      "ci_names": [
+        "pvwiihamwaapg110",
+        "ppwischwaapg003",
+        "ppwischwaapg004",
+        "evwidc4lfgic225",
+        "PPEDC1FHVG166"
+      ],
+      "ip": "127.0.0.1",
       "port": 9001,
       "os": "Windows Server 2022",
       "team": "S-TCS-DC-WINTEL",
@@ -13,9 +19,15 @@
     {
       "node_id": "node_2",
       "label": "WINTEL-SERVER-02",
-      "ci_names": ["pvwidc1tccxg037", "pvwidc1tccxg054", "pvwihamifcxg029"],
-      "ip": "192.168.1.102",
-      "port": 9001,
+      "ci_names": [
+        "pvwidc1tccxg037",
+        "pvwidc1tccxg054",
+        "pvwihamifcxg029",
+        "PPEDC1FHVG167",
+        "PPEDC2FHVG125"
+      ],
+      "ip": "127.0.0.1",
+      "port": 9002,
       "os": "Windows Server 2019",
       "team": "S-TCS-DC-WINTEL",
       "status": "offline"
@@ -23,13 +35,18 @@
     {
       "node_id": "node_3",
       "label": "WINTEL-SERVER-03",
-      "ci_names": ["pvwihamifcxg031", "pvwihamifcxg028", "pvwihamifcxg027"],
-      "ip": "192.168.1.103",
-      "port": 9001,
+      "ci_names": [
+        "pvwihamifcxg031",
+        "pvwihamifcxg028",
+        "pvwihamifcxg027",
+        "PPEDC3FHVG126"
+      ],
+      "ip": "127.0.0.1",
+      "port": 9003,
       "os": "Windows Server 2022",
       "team": "S-TCS-DC-WINTEL",
       "status": "offline"
     }
   ],
-  "_comment": "Update 'ip' fields with actual laptop IPs once they join the same network. Keep port as 9001 (node_worker.py listens on this)."
+  "_comment": "All nodes run on this laptop via 'python node_worker.py --all' (ports 9001-9003). For real multi-laptop use, set each ip."
 }
